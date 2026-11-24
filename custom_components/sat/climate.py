@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import voluptuous as vol
 from homeassistant.components.climate import (
@@ -96,6 +96,7 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         self._presets: dict[str, float] = preset_temperatures(config.presets)
 
         self._event_listeners_registered: bool = False
+        self._homeassistant_started_unsub: Optional[Callable[[], None]] = None
         self._pre_activity_preset: Optional[str] = None
         self._pre_custom_temperature: Optional[float] = None
         self._pre_activity_temperature: Optional[float] = None
@@ -123,7 +124,9 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         if self.hass.state is CoreState.running:
             self._register_event_listeners()
         else:
-            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self._register_event_listeners())
+            self._homeassistant_started_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._async_on_homeassistant_started
+            )
 
         self.async_on_remove(
             async_dispatcher_connect(self.hass, SIGNAL_DEMAND_CONTROL_UPDATED, self._on_demand_control_updated)
@@ -132,6 +135,10 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Run when entity about to be removed."""
         self._event_listeners_registered = False
+
+        if self._homeassistant_started_unsub is not None:
+            self._homeassistant_started_unsub()
+            self._homeassistant_started_unsub = None
 
         if self._window_sensor_handle is not None:
             self._window_sensor_handle.cancel()
@@ -393,6 +400,12 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
 
         # Write the state to Home Assistant
         self.async_write_ha_state()
+
+    @callback
+    def _async_on_homeassistant_started(self, _event: Event) -> None:
+        """Register the deferred listeners once Home Assistant is running."""
+        self._homeassistant_started_unsub = None
+        self._register_event_listeners()
 
     def _register_event_listeners(self) -> None:
         """Register event listeners."""

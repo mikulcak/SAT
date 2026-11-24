@@ -63,6 +63,7 @@ class SatDemandControl:
 
         self._started: bool = False
         self._id: Optional[str] = None
+        self._homeassistant_started_unsub: Optional[Callable[[], None]] = None
 
         self._frost_protection_active: bool = False
         self._target_temperature: Optional[float] = None
@@ -425,25 +426,38 @@ class SatDemandControl:
         await self.areas.async_added_to_hass(self._hass, self._coordinator.id)
 
         if self._hass.state is CoreState.running:
-            self._update_heating_curves()
-            self._register_event_listeners()
-
-            self.control_pid()
-            self.areas.control_pid()
-            self.schedule_heating_control_loop()
+            self._start_control()
         else:
-            self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self._update_heating_curves())
-            self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self._register_event_listeners())
-
-            self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self.control_pid())
-            self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self.areas.control_pid())
-            self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, lambda _: self.schedule_heating_control_loop())
+            # Keep the handle, so an unload/reload before Home Assistant has finished
+            # starting can cancel the deferred start. Otherwise the removed instance
+            # would still start its control loop and keep writing to the boiler.
+            self._homeassistant_started_unsub = self._hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._async_on_homeassistant_started
+            )
 
         self._target_temperature_changed_at = timestamp()
 
         self._unsubscribers.append(
             self._hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.async_will_remove_from_hass)
         )
+
+    @callback
+    def _async_on_homeassistant_started(self, _event: Event) -> None:
+        """Run the deferred start once Home Assistant is running."""
+        self._homeassistant_started_unsub = None
+        self._start_control()
+
+    def _start_control(self) -> None:
+        """Start the control loop, unless this instance has been removed meanwhile."""
+        if not self._started:
+            return
+
+        self._update_heating_curves()
+        self._register_event_listeners()
+
+        self.control_pid()
+        self.areas.control_pid()
+        self.schedule_heating_control_loop()
 
     async def async_will_remove_from_hass(self, _event: Optional[Event] = None) -> None:
         """Stop controlling and persist what the monitors learned."""
@@ -453,6 +467,10 @@ class SatDemandControl:
         self._started = False
         self._event_listeners_registered = False
         self._cancel_scheduled_heating_control_loop()
+
+        if self._homeassistant_started_unsub is not None:
+            self._homeassistant_started_unsub()
+            self._homeassistant_started_unsub = None
 
         for unsubscribe in self._unsubscribers:
             unsubscribe()
@@ -778,6 +796,9 @@ class SatDemandControl:
     @callback
     def schedule_heating_control_loop(self, _time: Optional[datetime] = None, force: bool = False) -> None:
         """Schedule a debounced execution of the heating control loop."""
+        if not self._started:
+            return
+
         if force or self._scheduled_heating_control_loop_is_overdue():
             self._cancel_scheduled_heating_control_loop()
             self._hass.async_create_task(self.async_control_heating_loop())
@@ -812,6 +833,10 @@ class SatDemandControl:
     async def async_control_heating_loop(self, time: Optional[datetime] = None) -> None:
         """Control the heating based on current temperature, target temperature, and outside temperature."""
         self._cancel_scheduled_heating_control_loop()
+
+        if not self._started:
+            # A removed instance must never send commands to the boiler again.
+            return
 
         if self._hvac_mode == HVACMode.OFF:
             if self._update_frost_protection():
@@ -891,14 +916,14 @@ class SatDemandControl:
 
     def _register_event_listeners(self) -> None:
         """Register event listeners."""
-        if self._event_listeners_registered:
+        if self._event_listeners_registered or not self._started:
             return
 
         self._event_listeners_registered = True
 
         self._unsubscribers.append(
             async_track_time_interval(
-                self._hass, self.schedule_heating_control_loop, timedelta(seconds=5)
+                self._hass, self.schedule_heating_control_loop, timedelta(seconds=5), cancel_on_shutdown=True
             )
         )
 
