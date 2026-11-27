@@ -109,6 +109,20 @@ def test_requested_setpoint_uses_secondary_and_cap(monkeypatch, demand_control):
     assert demand_control.requested_setpoint == 43.1
 
 
+def test_requested_setpoint_skips_cap_when_primary_room_is_cold(monkeypatch, demand_control):
+    demand_control.heating_curve._value = 30.0
+
+    monkeypatch.setattr(PID, "output", property(lambda self: 55.0))
+    monkeypatch.setattr("custom_components.sat.area.Areas._PIDs.output", property(lambda self: 50.0))
+    monkeypatch.setattr("custom_components.sat.area.Areas._PIDs.overshoot_cap", property(lambda self: 30.0))
+
+    monkeypatch.setattr(type(demand_control), "temperature_state", property(lambda self: SimpleNamespace(error=3.0)))
+    assert demand_control.requested_setpoint == pytest.approx(min(55.0, demand_control._coordinator.maximum_setpoint))
+
+    monkeypatch.setattr(type(demand_control), "temperature_state", property(lambda self: SimpleNamespace(error=0.2)))
+    assert demand_control.requested_setpoint == 30.0
+
+
 def test_requested_setpoint_applies_solar_gain_offset(monkeypatch, demand_control):
     _update_climate_config(demand_control, options={
         CONF_SOLAR_GAIN_COMPENSATION: True,

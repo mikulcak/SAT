@@ -32,6 +32,7 @@ ATTR_CURRENT_VALVE_POSITION = "current_valve_position"
 COMFORT_BAND = 0.1
 COOLING_SLOPE = 4.0
 OVERSHOOT_MARGIN = 0.3
+UNDERHEAT_MARGIN = 0.5
 COOLING_HEADROOM = 10.0
 
 
@@ -376,7 +377,12 @@ class Areas:
 
         @property
         def overshoot_cap(self) -> Optional[float]:
-            """Compute a cooling-driven cap based on overshooting rooms."""
+            """Compute a cooling-driven cap based on overshooting rooms.
+
+            Every room is expected to regulate itself through its own valve, so a room that is
+            slightly too warm must not starve another room that is clearly too cold: as soon as
+            any calling room is more than UNDERHEAT_MARGIN below its target, no cap applies.
+            """
             caps: list[float] = []
 
             for area in self._areas:
@@ -385,6 +391,10 @@ class Areas:
 
                 if (temperature_state := area.temperature_state) is None:
                     continue
+
+                if temperature_state.error > UNDERHEAT_MARGIN:
+                    _LOGGER.debug("Skipping overshoot cap: %s is %.1f°C below target.", area.id, temperature_state.error)
+                    return None
 
                 if temperature_state.error >= -OVERSHOOT_MARGIN:
                     continue

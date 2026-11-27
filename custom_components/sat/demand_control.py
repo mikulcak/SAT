@@ -15,7 +15,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from .area import Area, Areas, DrivingRoom
+from .area import Area, Areas, DrivingRoom, UNDERHEAT_MARGIN
 from .const import (
     COLD_SETPOINT,
     FROST_PROTECTION_HYSTERESIS_CELSIUS,
@@ -310,6 +310,10 @@ class SatDemandControl:
 
         # Rooms that are overshooting cap the request.
         overshoot_cap = self.areas.pids.overshoot_cap
+
+        # A primary room that is clearly too cold is not held back by warm secondary rooms either.
+        if (primary := self.temperature_state) is not None and primary.error > UNDERHEAT_MARGIN:
+            overshoot_cap = None
 
         if overshoot_cap is not None:
             setpoint = min(setpoint, overshoot_cap)

@@ -220,6 +220,23 @@ async def test_pwm_flame_off_return_offset(hass, monkeypatch, coordinator):
     assert heating_control.control_setpoint == 30.0 + OPTIONS_DEFAULTS[CONF_FLAME_OFF_SETPOINT_OFFSET_CELSIUS]
 
 
+async def test_pwm_flame_off_without_return_temperature_ignites(hass, monkeypatch, coordinator):
+    # EMS boilers report no return temperature; the ON phase must still raise the setpoint
+    # above the OFF-phase minimum, or the burner never ignites (seen 27.11.2026).
+    _update_coordinator_config(coordinator)
+    monkeypatch.setattr(type(coordinator), "return_temperature", property(lambda self: None))
+
+    heating_control = SatHeatingControl(hass=hass, coordinator=coordinator, config=coordinator._config)
+    _enable_pwm(heating_control, PWMStatus.ON)
+    monkeypatch.setattr(heating_control._pwm, "update", lambda *args, **kwargs: None)
+
+    await coordinator.async_set_heater_state(HeaterState.OFF)
+
+    await heating_control.update(_make_demand(40.0))
+
+    assert heating_control.control_setpoint == 40.0
+
+
 async def test_flame_off_setpoint_held_until_suppression_delay(hass, monkeypatch, coordinator):
     _update_coordinator_config(coordinator)
     monkeypatch.setattr(type(coordinator), "return_temperature", property(lambda self: 30.0))
